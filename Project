@@ -1,0 +1,122 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objs as go
+from plotly.subplots import make_subplots
+from sklearn.linear_model import LinearRegression
+import numpy as np
+from datetime import datetime
+
+# Set the configuration for the Streamlit page
+st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
+
+# Inject custom CSS for styling the buttons and selection box
+st.markdown("""
+<style>
+div.stButton > button:first-child {
+    background-color: #4CAF50; /* Green */
+    color: white;
+}
+div[data-baseweb="select"] > div {
+    background-color: #fff; /* White background */
+    color: green; /* Green text */
+}
+</style>""", unsafe_allow_html=True)
+
+# Function to fetch and return stock data within a user-specified date range
+def load_data(tickers, start_date, end_date):
+    data = yf.download(tickers, start=start_date, end=end_date, group_by='column')
+    return data
+
+def compute_rsi(data, window=14):
+    """ Calculate the Relative Strength Index (RSI) """
+    diff = data.diff(1)
+    gain = (diff.where(diff > 0, 0)).fillna(0)
+    loss = (-diff.where(diff < 0, 0)).fillna(0)
+
+    avg_gain = gain.rolling(window=window, min_periods=1).mean()
+    avg_loss = loss.rolling(window=window, min_periods=1).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def plot_advanced_stock_data(df, ticker_list, selected_metrics, chart_type='Line', moving_average_days=0, include_regression=False, include_rsi=False):
+    colors = ['blue', 'green', 'red', 'purple', 'orange', 'yellow', 'brown', 'pink']
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        subplot_titles=('Stock Prices', 'RSI' if include_rsi else 'Scale Adjuster'), row_width=[0.2, 0.7])
+    
+    for index, ticker in enumerate(ticker_list):
+        color = colors[index % len(colors)]
+        if chart_type == 'Candlestick' and all(metric in df for metric in ['Open', 'High', 'Low', 'Close']):
+            fig.add_trace(go.Candlestick(x=df.index,
+                                         open=df['Open'][ticker],
+                                         high=df['High'][ticker],
+                                         low=df['Low'][ticker],
+                                         close=df['Close'][ticker],
+                                         name=ticker,
+                                         increasing={'line': {'color': color}},
+                                         decreasing={'line': {'color': color}}), row=1, col=1)
+        for metric in selected_metrics:
+            if metric in df.columns:
+                fig.add_trace(go.Scatter(x=df.index, y=df[metric][ticker], mode='lines', name=f"{ticker} {metric}"), row=1, col=1)
+                if moving_average_days > 0:
+                    ma = df[metric][ticker].rolling(window=moving_average_days).mean()
+                    fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f"{ticker} {metric} {moving_average_days}-day MA", line=dict(color=color, dash='dot')), row=1, col=1)
+
+        if include_rsi:
+            rsi = compute_rsi(df['Close'][ticker])
+            fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name=f"{ticker} RSI"), row=2, col=1)
+
+    fig.update_layout(
+        xaxis=dict(
+            title='Date',
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=1, label='1m', step='month', stepmode='backward'),
+                    dict(count=3, label='3m', step='month', stepmode='backward'),
+                    dict(count=6, label='6m', step='month', stepmode='backward'),
+                    dict(count=1, label='YTD', step='year', stepmode='todate'),
+                    dict(step='all', label='All')
+                ])
+            ),
+            type='date',
+            rangeslider=dict(visible=True),
+            tickmode='auto',
+            tickformat='%Y-%m',
+        ),
+        height=800
+    )
+    return fig
+
+# User interface for input
+st.title('Stock Analysis Dashboard')
+
+tickers = st.sidebar.text_input("Enter stock tickers separated by commas (e.g., AAPL, MSFT, GOOGL):")
+start_date_str = st.sidebar.text_input("Start Date (MM/DD/YYYY)", value="01/01/2020")
+end_date_str = st.sidebar.text_input("End Date (MM/DD/YYYY)", value="12/31/2020")
+metrics = ['Open', 'High', 'Low', 'Close', 'Volume']
+selected_metrics = st.sidebar.multiselect("Select metrics to display", metrics, default=['Close'])
+chart_type = st.sidebar.selectbox("Select Chart Type", ['Line', 'Candlestick'])
+moving_average_days = st.sidebar.number_input("Moving Average Days (0 for none)", min_value=0, max_value=100, value=0)
+include_regression = st.sidebar.checkbox("Include Linear Regression for Line Chart")
+include_rsi = st.sidebar.checkbox("Include RSI (Relative Strength Index)")
+load_button = st.sidebar.button('Load Data')
+
+# Processing input and displaying results
+try:
+    start_date = datetime.strptime(start_date_str, '%m/%d/%Y')
+    end_date = datetime.strptime(end_date_str, '%m/%d/%Y')
+except ValueError:
+    st.error("Invalid date format. Please enter date as MM/DD/YYYY.")
+    st.stop()
+
+if load_button and tickers:
+    ticker_list = [ticker.strip().upper() for ticker in tickers.split(',')]
+    with st.spinner(f'Loading data for {", ".join(ticker_list)} from {start_date_str} to {end_date_str}...'):
+        df = load_data(ticker_list, start_date, end_date)
+    if df.empty:
+        st.error("No data found for the specified tickers or date range.")
+    else:
+        st.subheader(f"Advanced Stock Data Visualization for {', '.join(ticker_list)}")
+        st.plotly_chart(plot_advanced_stock_data(df, ticker_list, selected_metrics, chart_type, moving_average_days, include_regression, include_rsi), use_container_width=True)
